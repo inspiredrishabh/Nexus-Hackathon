@@ -33,6 +33,11 @@ export default function App() {
   const [targetPosition, setTargetPosition] = useState(null);
   const [isMoving, setIsMoving] = useState(false);
 
+  // Chat State
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [showChat, setShowChat] = useState(false);
+
   // Refs
   const wsRef = useRef(null);
   const canvasRef = useRef(null);
@@ -48,6 +53,8 @@ export default function App() {
   const isMovingRef = useRef(false);
   const animationStartTimeRef = useRef(0);
   const startPositionRef = useRef(null);
+  const chatMessagesRef = useRef([]);
+  const chatInputRef = useRef(null);
 
   // Keep refs in sync with state for animation loop
   useEffect(() => {
@@ -73,6 +80,32 @@ export default function App() {
   useEffect(() => {
     isMovingRef.current = isMoving;
   }, [isMoving]);
+
+  useEffect(() => {
+    chatMessagesRef.current = chatMessages;
+  }, [chatMessages]);
+
+  // Auto-show/hide chat based on proximity
+  useEffect(() => {
+    if (nearby.length > 0 && !showChat) {
+      setShowChat(true);
+    } else if (nearby.length === 0 && showChat) {
+      // Delay hiding chat to allow reading messages
+      const hideTimeout = setTimeout(() => {
+        if (nearby.length === 0) {
+          setShowChat(false);
+        }
+      }, 3000);
+      return () => clearTimeout(hideTimeout);
+    }
+  }, [nearby.length, showChat]);
+
+  // Clean old chat messages (keep last 50)
+  useEffect(() => {
+    if (chatMessages.length > 50) {
+      setChatMessages((prev) => prev.slice(-50));
+    }
+  }, [chatMessages.length]);
 
   // Rate-limited move function
   const sendMove = useCallback(
@@ -125,7 +158,7 @@ export default function App() {
     (e) => {
       const roomData = room || { width: 1600, height: 900 };
       const canvas = canvasRef.current;
-      
+
       if (!canvas || !selfId) {
         return;
       }
@@ -150,7 +183,7 @@ export default function App() {
       const distance = Math.sqrt(
         Math.pow(targetPos.x - startPos.x, 2) + Math.pow(targetPos.y - startPos.y, 2)
       );
-      
+
       if (distance < 10) return;
 
       // Set animation state
@@ -206,9 +239,9 @@ export default function App() {
 
       // Calculate eased position
       const easedProgress = easeInOutQuad(progress);
-      const currentX = startPositionRef.current.x + 
+      const currentX = startPositionRef.current.x +
         (targetPosition.x - startPositionRef.current.x) * easedProgress;
-      const currentY = startPositionRef.current.y + 
+      const currentY = startPositionRef.current.y +
         (targetPosition.y - startPositionRef.current.y) * easedProgress;
 
       // Send position update
@@ -377,6 +410,26 @@ export default function App() {
               setNearby(data.payload.nearby || []);
             }
             break;
+
+          case "chat":
+            { const { senderId, senderName, message, timestamp } = data.payload;
+            const newMessage = {
+              id: `${senderId}-${timestamp}`,
+              senderId,
+              senderName,
+              message,
+              timestamp,
+              isOwn: senderId === selfIdRef.current
+            };
+
+            setChatMessages(prev => [...prev, newMessage]);
+            console.log("Received chat message:", newMessage);
+            break; }
+
+          case "chat_error":
+            console.log("Chat error:", data.payload.message);
+            // Optionally show error to user
+            break;
         }
       } catch (err) {
         console.error("Failed to parse WebSocket message:", err);
@@ -386,7 +439,7 @@ export default function App() {
     ws.onclose = (event) => {
       console.log(`WebSocket closed:`, event.code, event.reason);
       setConnected(false);
-      
+
       // Clear heartbeat on close
       if (heartbeatIntervalRef.current) {
         clearInterval(heartbeatIntervalRef.current);
@@ -397,10 +450,10 @@ export default function App() {
       if (gameState === "main" && wsRef.current === ws && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         const backoffDelay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
         console.log(`Attempting reconnection in ${backoffDelay}ms (attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
-        
+
         setReconnectAttempts(prev => prev + 1);
         setDebugInfo((prev) => ({ ...prev, wsState: "RECONNECTING" }));
-        
+
         reconnectTimeoutRef.current = setTimeout(() => {
           // Double-check we're still in main state and this is still the current WebSocket
           if (gameState === "main" && wsRef.current === ws) {
@@ -459,7 +512,7 @@ export default function App() {
         // Animated target circle
         const time = performance.now() * 0.003;
         const pulseSize = 8 + Math.sin(time) * 3;
-        
+
         ctx.beginPath();
         ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
         ctx.lineWidth = 2;
@@ -565,7 +618,7 @@ export default function App() {
 
         const nameX = participant.x + 25;
         const nameY = participant.y + 5;
-        const displayName = isCurrentlyMoving 
+        const displayName = isCurrentlyMoving
           ? `${participant.name || "Guest"} →`
           : participant.name || "Guest";
 
@@ -619,7 +672,7 @@ export default function App() {
       wsRef.current.close();
       wsRef.current = null;
     }
-    
+
     setGameState("login");
     setCallsign("");
     setSelfId(null);
@@ -634,10 +687,10 @@ export default function App() {
     console.log(`Test move button clicked`);
     const targetX = Math.random() * 1600;
     const targetY = Math.random() * 900;
-    
+
     // Simulate click behavior
     if (!selfId) return;
-    
+
     const currentParticipant = participantsMap.get(selfId);
     if (!currentParticipant) return;
 
@@ -649,6 +702,39 @@ export default function App() {
     startPositionRef.current = startPos;
     animationStartTimeRef.current = performance.now();
   };
+
+  // Send chat message
+  const sendChatMessage = useCallback(() => {
+    const message = sanitizeInput(chatInput);
+    if (!message || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    const chatData = {
+      type: "chat",
+      payload: { message }
+    };
+
+    console.log("Sending chat message:", message);
+    wsRef.current.send(JSON.stringify(chatData));
+    setChatInput("");
+  }, [chatInput]);
+
+  // Chat message sanitization
+  const sanitizeInput = (input) => {
+    return input
+      .replace(/[<>]/g, '') // Remove potential HTML
+      .slice(0, 200) // Limit length
+      .trim();
+  };
+
+  // Handle chat input key press
+  const handleChatKeyPress = useCallback((e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  }, [sendChatMessage]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -833,6 +919,88 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Chat Panel */}
+          {showChat && nearby.length > 0 && (
+            <div className="absolute bottom-4 left-4 bg-slate-800/95 backdrop-blur-sm border border-cyan-500/30 rounded-lg w-80 shadow-2xl">
+              {/* Chat Header */}
+              <div className="p-3 border-b border-cyan-500/20">
+                <div className="flex items-center justify-between">
+                  <div className="text-cyan-300 font-bold text-sm">
+                    PROXIMITY CHAT
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    {nearby.length} nearby
+                  </div>
+                </div>
+              </div>
+
+              {/* Chat Messages */}
+              <div className="h-48 overflow-y-auto p-3 space-y-2 scrollbar-thin scrollbar-thumb-cyan-500/30">
+                {chatMessages.slice(-20).map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`text-xs ${
+                      msg.isOwn
+                        ? 'text-right'
+                        : 'text-left'
+                    }`}
+                  >
+                    <div className={`inline-block max-w-[90%] p-2 rounded ${
+                      msg.isOwn
+                        ? 'bg-cyan-600/20 text-cyan-100'
+                        : 'bg-slate-700/50 text-slate-200'
+                    }`}>
+                      {!msg.isOwn && (
+                        <div className="text-cyan-300 font-bold mb-1">
+                          {msg.senderName}
+                        </div>
+                      )}
+                      <div>{msg.message}</div>
+                      <div className="text-xs opacity-50 mt-1">
+                        {new Date(msg.timestamp).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {chatMessages.length === 0 && (
+                  <div className="text-center text-slate-400 text-xs py-4">
+                    Move closer to other participants to start chatting
+                  </div>
+                )}
+              </div>
+
+              {/* Chat Input */}
+              <div className="p-3 border-t border-cyan-500/20">
+                <div className="flex space-x-2">
+                  <input
+                    ref={chatInputRef}
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyPress={handleChatKeyPress}
+                    placeholder="Type your message..."
+                    className="flex-1 bg-slate-700/50 border border-cyan-500/30 rounded px-3 py-2 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-cyan-400"
+                    maxLength={200}
+                    disabled={nearby.length === 0}
+                  />
+                  <button
+                    onClick={sendChatMessage}
+                    disabled={!chatInput.trim() || nearby.length === 0}
+                    className="bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-3 py-2 rounded text-sm transition-colors duration-200"
+                  >
+                    Send
+                  </button>
+                </div>
+                <div className="text-xs text-slate-500 mt-1">
+                  Messages visible to participants within {PROXIMITY_RADIUS}px
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -845,16 +1013,10 @@ export default function App() {
           <div className="text-slate-400 space-y-1">
             <div>• <span className="text-cyan-300">Click anywhere</span> on the neural map to move your avatar</div>
             <div>• Your avatar will <span className="text-cyan-300">smoothly animate</span> to the target location</div>
-            <div>
-              • White crosshair shows your movement target with animated pulse
-            </div>
-            <div>
-              • Blue lines connect you to nearby participants within{" "}
-              {PROXIMITY_RADIUS}px
-            </div>
-            <div>
-              • Use "TEST MOVE" button to trigger random movement animation
-            </div>
+            <div>• <span className="text-cyan-300">Chat panel appears</span> when other participants are within {PROXIMITY_RADIUS}px</div>
+            <div>• Messages are <span className="text-cyan-300">only visible</span> to participants in proximity range</div>
+            <div>• Use <span className="text-cyan-300">Enter</span> to send messages quickly</div>
+            <div>• Blue lines connect you to nearby participants within proximity</div>
           </div>
         </div>
       </div>
