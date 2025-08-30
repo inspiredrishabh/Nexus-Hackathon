@@ -7,6 +7,8 @@ import crypto from "crypto";
 const PORT = process.env.PORT || 5000;
 const ROOM = { width: 1600, height: 900 }; // client should mirror these
 const MOVE_RATE_LIMIT_MS = 12; // ~80 updates/sec cap per client
+const CHAT_RATE_LIMIT_MS = 1000; // 1 message per second max
+const MAX_MESSAGE_LENGTH = 200; // Prevent spam with long messages
 const HEARTBEAT_INTERVAL_MS = 15000; // pings
 const CONNECTION_TTL_MS = 30000; // declare dead if no pong in 30s
 const PROXIMITY_RADIUS = 200; // px distance threshold
@@ -85,12 +87,54 @@ function send(ws, type, payload) {
   if (ws.readyState === 1) ws.send(JSON.stringify({ type, payload, ts: now() }));
 }
 
+// Sanitize chat message - prevent XSS and normalize text
+function sanitizeMessage(text) {
+  if (typeof text !== 'string') return '';
+  
+  return text
+    .trim()
+    .slice(0, MAX_MESSAGE_LENGTH)
+    .replace(/[<>]/g, '') // Remove potential HTML tags
+    .replace(/\s+/g, ' '); // Normalize whitespace
+}
+
+// Get participants within proximity of a given participant
+function getProximityParticipants(sourceParticipant) {
+  const nearby = [];
+  for (const [id, participant] of participants) {
+    if (sourceParticipant.id === id) continue;
+    const dx = sourceParticipant.x - participant.x;
+    const dy = sourceParticipant.y - participant.y;
+    if (dx*dx + dy*dy <= PROXIMITY_RADIUS*PROXIMITY_RADIUS) {
+      nearby.push(participant);
+    }
+  }
+  return nearby;
+}
+
+// Send message to specific participants
+function sendToParticipants(type, payload, targetParticipants, exceptWs = null) {
+  const msg = JSON.stringify({ type, payload, ts: now() });
+  for (const client of wss.clients) {
+    if (client.readyState === 1 && client !== exceptWs) {
+      // Check if this client belongs to one of the target participants
+      const clientParticipant = Array.from(participants.values())
+        .find(p => client._participantId === p.id);
+      
+      if (clientParticipant && targetParticipants.some(p => p.id === clientParticipant.id)) {
+        client.send(msg);
+      }
+    }
+  }
+}
+
 // ---- Message Protocol ----
 // Client -> Server
 //   join:     { name?: string }
 //   move:     { x: number, y: number }
 //   rename:   { name: string }
 //   ping:     {}
+//   chat:     { message: string }
 //
 // Server -> Client
 //   welcome:  { selfId: string, room: {width, height} }
@@ -101,13 +145,16 @@ function send(ws, type, payload) {
 //   left:     { id: string }
 //   pong:     {}
 //   proximity: { selfId: string, nearby: string[] }
+//   chat:     { senderId: string, senderName: string, message: string, timestamp: number }
 
 // ---- WebSocket lifecycle ----
 wss.on("connection", (ws) => {
   // Per-connection context
   let id = makeId();
   let lastMoveAt = 0;
-  let isAlive = true; // heartbeat flag
+  let lastChatAt = 0; // Rate limiting for chat
+  ws.isAlive = true;
+  ws._participantId = id; // Store participant ID on WebSocket for message routing
 
   // Provisional participant (until 'join')
   const spawn = randomSpawn();
@@ -132,6 +179,7 @@ wss.on("connection", (ws) => {
     try {
       const { type, payload } = JSON.parse(String(data));
       p.lastSeen = now();
+      ws.isAlive = true;
 
       switch (type) {
         case "join": {
@@ -176,16 +224,72 @@ wss.on("connection", (ws) => {
           send(ws, "pong", {});
           break;
         }
+        case "chat": {
+          const currentTime = now();
+          
+          // Rate limiting
+          if (currentTime - lastChatAt < CHAT_RATE_LIMIT_MS) {
+            console.log(`Chat rate limit exceeded for participant ${id}`);
+            break;
+          }
+          lastChatAt = currentTime;
+          
+          // Validate and sanitize message
+          const rawMessage = payload?.message;
+          if (!rawMessage) break;
+          
+          const sanitizedMessage = sanitizeMessage(rawMessage);
+          if (!sanitizedMessage || sanitizedMessage.length === 0) {
+            console.log(`Empty or invalid message from participant ${id}`);
+            break;
+          }
+          
+          // Get current participant state
+          const sender = participants.get(id);
+          if (!sender) {
+            console.log(`Sender participant ${id} not found`);
+            break;
+          }
+          
+          // Find participants in proximity
+          const nearbyParticipants = getProximityParticipants(sender);
+          
+          if (nearbyParticipants.length === 0) {
+            console.log(`No nearby participants for ${id} to chat with`);
+            // Optionally send a "no one nearby" message back to sender
+            send(ws, "chat_error", { message: "No one nearby to chat with" });
+            break;
+          }
+          
+          console.log(`Broadcasting chat from ${sender.name} to ${nearbyParticipants.length} nearby participants`);
+          
+          // Create chat message payload
+          const chatPayload = {
+            senderId: sender.id,
+            senderName: sender.name,
+            message: sanitizedMessage,
+            timestamp: currentTime
+          };
+          
+          // Send to nearby participants (including sender for feedback)
+          const allTargets = [sender, ...nearbyParticipants];
+          sendToParticipants("chat", chatPayload, allTargets);
+          
+          break;
+        }
         default:
           // ignore unknown messages in MVP
           break;
       }
     } catch (e) {
-      // ignore malformed JSON in MVP
+      console.error('Error processing message:', e);
     }
   });
 
-  ws.on("pong", () => { isAlive = true; p.lastSeen = now(); });
+  ws.on("pong", () => { 
+    ws.isAlive = true; 
+    p.lastSeen = now(); 
+  });
 
   ws.on("close", () => {
     participants.delete(id);
@@ -199,26 +303,33 @@ wss.on("connection", (ws) => {
 
 // ---- Heartbeat (clean up dead sockets) ----
 const interval = setInterval(() => {
-  for (const ws of wss.clients) {
-    // @ts-ignore
-    if (!ws._context) ws._context = {};
-  }
   wss.clients.forEach((ws) => {
-    // track liveness flag set in 'pong'
+    // Check if the connection is dead
     if (ws.isAlive === false) {
-      try { ws.terminate(); } catch {}
+      console.log('Terminating dead connection');
+      try { 
+        ws.terminate(); 
+      } catch (e) {
+        console.error('Error terminating connection:', e);
+      }
       return;
     }
-    // mark as not alive; expect a pong
-    // @ts-ignore
+    
+    // Mark as potentially dead and send ping
     ws.isAlive = false;
-    try { ws.ping(); } catch {}
+    try { 
+      ws.ping();
+    } catch (e) {
+      console.error('Error sending ping:', e);
+      try { ws.terminate(); } catch {}
+    }
   });
 
   // Also evict ghost participants that somehow lingered
   const cutoff = now() - CONNECTION_TTL_MS;
   for (const [id, p] of participants) {
     if (p.lastSeen < cutoff) {
+      console.log(`Removing ghost participant: ${id}`);
       participants.delete(id);
       broadcast("left", { id });
     }
