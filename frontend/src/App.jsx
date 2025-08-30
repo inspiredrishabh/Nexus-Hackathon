@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 
 const WS_URL = "ws://localhost:5000";
 const PROXIMITY_RADIUS = 200;
+const HEARTBEAT_INTERVAL = 15000; // Match server's HEARTBEAT_INTERVAL_MS
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 export default function App() {
   // UI State
@@ -12,6 +14,7 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [selfId, setSelfId] = useState(null);
   const [room, setRoom] = useState(null);
+  const [reconnectAttempts, setReconnectAttempts] = useState(0);
 
   // Game State
   const [participantsMap, setParticipantsMap] = useState(() => new Map());
@@ -34,6 +37,9 @@ export default function App() {
   const participantsRef = useRef(participantsMap);
   const nearbyRef = useRef(nearby);
   const selfIdRef = useRef(selfId);
+  const reconnectTimeoutRef = useRef(null);
+  const heartbeatIntervalRef = useRef(null);
+  const callsignRef = useRef(callsign);
 
   // Keep refs in sync with state for animation loop
   useEffect(() => {
@@ -47,6 +53,10 @@ export default function App() {
   useEffect(() => {
     selfIdRef.current = selfId;
   }, [selfId]);
+
+  useEffect(() => {
+    callsignRef.current = callsign;
+  }, [callsign]);
 
   // Rate-limited move function
   const sendMove = useCallback(
@@ -126,19 +136,40 @@ export default function App() {
     [room, sendMove]
   );
 
-  // WebSocket connection management
+  // WebSocket connection management with heartbeat and auto-reconnection
   const connect = useCallback((name) => {
     console.log(`Connecting with name: ${name}`);
 
-    // Don't close existing connection if it's the same one
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      console.log(`Already connected, skipping`);
+    // Clear any existing reconnection timeout
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    // Clear existing heartbeat
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
+
+    // Don't create new connection if already connecting or open
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.CONNECTING || wsRef.current.readyState === WebSocket.OPEN)) {
+      console.log(`WebSocket already connecting/connected, skipping`);
       return;
     }
 
+    // Properly close existing connection
     if (wsRef.current) {
       console.log(`Closing existing WebSocket`);
-      wsRef.current.close();
+      wsRef.current.onopen = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
+      try {
+        wsRef.current.close();
+      } catch (e) {
+        console.error('Error closing WebSocket:', e);
+      }
     }
 
     const ws = new WebSocket(WS_URL);
@@ -146,9 +177,10 @@ export default function App() {
 
     setDebugInfo((prev) => ({ ...prev, wsState: "CONNECTING" }));
 
-    ws.addEventListener("open", () => {
+    ws.onopen = () => {
       console.log(`WebSocket connected`);
       setConnected(true);
+      setReconnectAttempts(0);
       setDebugInfo((prev) => ({ ...prev, wsState: "OPEN" }));
 
       const joinMessage = {
@@ -156,10 +188,32 @@ export default function App() {
         payload: { name: name || `Guest-${Math.floor(Math.random() * 1000)}` },
       };
       console.log(`Sending join message:`, joinMessage);
-      ws.send(JSON.stringify(joinMessage));
-    });
+      try {
+        ws.send(JSON.stringify(joinMessage));
+      } catch (e) {
+        console.error('Error sending join message:', e);
+      }
 
-    ws.addEventListener("message", (ev) => {
+      // Start heartbeat - send ping every 15 seconds
+      heartbeatIntervalRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: "ping", payload: {} }));
+            console.log("Sent ping");
+          } catch (err) {
+            console.error("Failed to send ping:", err);
+            clearInterval(heartbeatIntervalRef.current);
+            heartbeatIntervalRef.current = null;
+          }
+        } else {
+          console.log("WebSocket not open, clearing heartbeat");
+          clearInterval(heartbeatIntervalRef.current);
+          heartbeatIntervalRef.current = null;
+        }
+      }, HEARTBEAT_INTERVAL);
+    };
+
+    ws.onmessage = (ev) => {
       setDebugInfo((prev) => ({
         ...prev,
         messagesReceived: prev.messagesReceived + 1,
@@ -175,6 +229,11 @@ export default function App() {
             setRoom(data.payload?.room || { width: 1600, height: 900 });
             break;
 
+          case "pong":
+            // Heartbeat response received
+            console.log("Received pong - connection alive");
+            break;
+
           case "state":
             if (Array.isArray(data.payload?.participants)) {
               const map = new Map();
@@ -186,7 +245,7 @@ export default function App() {
             break;
 
           case "joined":
-            const joinedParticipant = data.payload.participant;
+            { const joinedParticipant = data.payload.participant;
             if (joinedParticipant) {
               setParticipantsMap((prev) => {
                 const copy = new Map(prev);
@@ -194,10 +253,10 @@ export default function App() {
                 return copy;
               });
             }
-            break;
+            break; }
 
           case "moved":
-            const { id, x, y } = data.payload;
+            { const { id, x, y } = data.payload;
             setParticipantsMap((prev) => {
               const copy = new Map(prev);
               const existing = copy.get(id);
@@ -206,10 +265,10 @@ export default function App() {
               }
               return copy;
             });
-            break;
+            break; }
 
           case "renamed":
-            const { id: renameId, name: newName } = data.payload;
+            { const { id: renameId, name: newName } = data.payload;
             setParticipantsMap((prev) => {
               if (!prev.has(renameId)) return prev;
               const copy = new Map(prev);
@@ -217,7 +276,7 @@ export default function App() {
               copy.set(renameId, { ...existing, name: newName });
               return copy;
             });
-            break;
+            break; }
 
           case "left":
             setParticipantsMap((prev) => {
@@ -237,20 +296,45 @@ export default function App() {
       } catch (err) {
         console.error("Failed to parse WebSocket message:", err);
       }
-    });
+    };
 
-    ws.addEventListener("close", () => {
-      console.log(`WebSocket closed`);
+    ws.onclose = (event) => {
+      console.log(`WebSocket closed:`, event.code, event.reason);
       setConnected(false);
-      setDebugInfo((prev) => ({ ...prev, wsState: "CLOSED" }));
-      // Don't reset data immediately to avoid flashing
-    });
+      
+      // Clear heartbeat on close
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = null;
+      }
 
-    ws.addEventListener("error", (err) => {
+      // Only attempt reconnection if we're still in main state and this is the current WebSocket
+      if (gameState === "main" && wsRef.current === ws && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        const backoffDelay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+        console.log(`Attempting reconnection in ${backoffDelay}ms (attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+        
+        setReconnectAttempts(prev => prev + 1);
+        setDebugInfo((prev) => ({ ...prev, wsState: "RECONNECTING" }));
+        
+        reconnectTimeoutRef.current = setTimeout(() => {
+          // Double-check we're still in main state and this is still the current WebSocket
+          if (gameState === "main" && wsRef.current === ws) {
+            connect(callsignRef.current);
+          }
+        }, backoffDelay);
+      } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.log("Max reconnection attempts reached");
+        setDebugInfo((prev) => ({ ...prev, wsState: "FAILED" }));
+      } else {
+        setDebugInfo((prev) => ({ ...prev, wsState: "CLOSED" }));
+      }
+    };
+
+    ws.onerror = (err) => {
       console.error("WebSocket error:", err);
       setDebugInfo((prev) => ({ ...prev, wsState: "ERROR" }));
-    });
-  }, []); // Remove selfId dependency to prevent reconnections
+    };
+  }, [gameState, reconnectAttempts]);
 
   // Canvas rendering effect - only depends on gameState
   useEffect(() => {
@@ -382,15 +466,34 @@ export default function App() {
 
   // Disconnect handler
   const handleDisconnect = () => {
-    if (wsRef.current) {
-      wsRef.current.close();
+    // Clear reconnection attempts and timeouts
+    setReconnectAttempts(0);
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
+
+    if (wsRef.current) {
+      // Clean up event handlers before closing
+      wsRef.current.onopen = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    
     setGameState("login");
     setCallsign("");
     setSelfId(null);
     setRoom(null);
     setParticipantsMap(new Map());
     setNearby([]);
+    setConnected(false);
   };
 
   // Test move button for debugging
@@ -407,6 +510,12 @@ export default function App() {
       }
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current);
       }
     };
   }, []);

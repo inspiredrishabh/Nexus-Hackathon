@@ -107,7 +107,7 @@ wss.on("connection", (ws) => {
   // Per-connection context
   let id = makeId();
   let lastMoveAt = 0;
-  let isAlive = true; // heartbeat flag
+  ws.isAlive = true; // Set isAlive on the WebSocket instance
 
   // Provisional participant (until 'join')
   const spawn = randomSpawn();
@@ -132,6 +132,7 @@ wss.on("connection", (ws) => {
     try {
       const { type, payload } = JSON.parse(String(data));
       p.lastSeen = now();
+      ws.isAlive = true; // Mark as alive on any message
 
       switch (type) {
         case "join": {
@@ -185,7 +186,10 @@ wss.on("connection", (ws) => {
     }
   });
 
-  ws.on("pong", () => { isAlive = true; p.lastSeen = now(); });
+  ws.on("pong", () => { 
+    ws.isAlive = true; 
+    p.lastSeen = now(); 
+  });
 
   ws.on("close", () => {
     participants.delete(id);
@@ -199,26 +203,33 @@ wss.on("connection", (ws) => {
 
 // ---- Heartbeat (clean up dead sockets) ----
 const interval = setInterval(() => {
-  for (const ws of wss.clients) {
-    // @ts-ignore
-    if (!ws._context) ws._context = {};
-  }
   wss.clients.forEach((ws) => {
-    // track liveness flag set in 'pong'
+    // Check if the connection is dead
     if (ws.isAlive === false) {
-      try { ws.terminate(); } catch {}
+      console.log('Terminating dead connection');
+      try { 
+        ws.terminate(); 
+      } catch (e) {
+        console.error('Error terminating connection:', e);
+      }
       return;
     }
-    // mark as not alive; expect a pong
-    // @ts-ignore
+    
+    // Mark as potentially dead and send ping
     ws.isAlive = false;
-    try { ws.ping(); } catch {}
+    try { 
+      ws.ping();
+    } catch (e) {
+      console.error('Error sending ping:', e);
+      try { ws.terminate(); } catch {}
+    }
   });
 
   // Also evict ghost participants that somehow lingered
   const cutoff = now() - CONNECTION_TTL_MS;
   for (const [id, p] of participants) {
     if (p.lastSeen < cutoff) {
+      console.log(`Removing ghost participant: ${id}`);
       participants.delete(id);
       broadcast("left", { id });
     }
