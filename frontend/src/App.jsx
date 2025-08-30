@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 
-const WS_URL = "ws://localhost:5000";
+const WS_URL = "wss://vibecoding-4v23.onrender.com";
 const PROXIMITY_RADIUS = 200;
 const HEARTBEAT_INTERVAL = 15000; // Match server's HEARTBEAT_INTERVAL_MS
 const MAX_RECONNECT_ATTEMPTS = 5;
