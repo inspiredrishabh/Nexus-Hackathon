@@ -29,6 +29,10 @@ export default function App() {
     wsState: "CLOSED",
   });
 
+  // Animation State
+  const [targetPosition, setTargetPosition] = useState(null);
+  const [isMoving, setIsMoving] = useState(false);
+
   // Refs
   const wsRef = useRef(null);
   const canvasRef = useRef(null);
@@ -40,6 +44,10 @@ export default function App() {
   const reconnectTimeoutRef = useRef(null);
   const heartbeatIntervalRef = useRef(null);
   const callsignRef = useRef(callsign);
+  const targetPositionRef = useRef(null);
+  const isMovingRef = useRef(false);
+  const animationStartTimeRef = useRef(0);
+  const startPositionRef = useRef(null);
 
   // Keep refs in sync with state for animation loop
   useEffect(() => {
@@ -58,11 +66,19 @@ export default function App() {
     callsignRef.current = callsign;
   }, [callsign]);
 
+  useEffect(() => {
+    targetPositionRef.current = targetPosition;
+  }, [targetPosition]);
+
+  useEffect(() => {
+    isMovingRef.current = isMoving;
+  }, [isMoving]);
+
   // Rate-limited move function
   const sendMove = useCallback(
-    (x, y) => {
+    (x, y, isAnimationFrame = false) => {
       const now = Date.now();
-      if (now - lastMoveRef.current < 12) {
+      if (!isAnimationFrame && now - lastMoveRef.current < 12) {
         return;
       }
       lastMoveRef.current = now;
@@ -80,10 +96,9 @@ export default function App() {
         payload: { x: Math.round(x), y: Math.round(y) },
       };
 
-      console.log(`Sending move:`, moveData);
       ws.send(JSON.stringify(moveData));
 
-      // Add this code to update your own position locally
+      // Update local position immediately
       if (selfId) {
         setParticipantsMap((prev) => {
           const copy = new Map(prev);
@@ -105,36 +120,106 @@ export default function App() {
     [selfId]
   ); // Add selfId to dependencies
 
-  // Handle canvas mouse movement
-  const handleCanvasMouseMove = useCallback(
+  // Handle canvas click for movement
+  const handleCanvasClick = useCallback(
     (e) => {
       const roomData = room || { width: 1600, height: 900 };
-
       const canvas = canvasRef.current;
-      if (!canvas) {
+      
+      if (!canvas || !selfId) {
         return;
       }
 
       const rect = canvas.getBoundingClientRect();
-
       const scaleX = roomData.width / rect.width;
       const scaleY = roomData.height / rect.height;
 
-      const x = (e.clientX - rect.left) * scaleX;
-      const y = (e.clientY - rect.top) * scaleY;
+      const targetX = (e.clientX - rect.left) * scaleX;
+      const targetY = (e.clientY - rect.top) * scaleY;
 
-      console.log(`Mouse coords: ${x}, ${y}`);
+      console.log(`Click target: ${targetX}, ${targetY}`);
+
+      // Get current position
+      const currentParticipant = participantsMap.get(selfId);
+      if (!currentParticipant) return;
+
+      const startPos = { x: currentParticipant.x, y: currentParticipant.y };
+      const targetPos = { x: Math.round(targetX), y: Math.round(targetY) };
+
+      // Don't move if clicking very close to current position
+      const distance = Math.sqrt(
+        Math.pow(targetPos.x - startPos.x, 2) + Math.pow(targetPos.y - startPos.y, 2)
+      );
+      
+      if (distance < 10) return;
+
+      // Set animation state
+      setTargetPosition(targetPos);
+      setIsMoving(true);
+      startPositionRef.current = startPos;
+      animationStartTimeRef.current = performance.now();
 
       // Update debug info
       setDebugInfo((prev) => ({
         ...prev,
-        lastMousePos: { x: Math.round(x), y: Math.round(y), time: Date.now() },
+        lastMousePos: { x: targetPos.x, y: targetPos.y, time: Date.now() },
       }));
-
-      sendMove(x, y);
     },
-    [room, sendMove]
+    [room, selfId, participantsMap]
   );
+
+  // Animation configuration
+  const ANIMATION_DURATION = 800; // ms
+  const EASING_POWER = 2; // quadratic easing
+
+  // Easing function for smooth animation
+  const easeInOutQuad = (t) => {
+    return t < 0.5 ? EASING_POWER * t * t : 1 - Math.pow(-2 * t + 2, EASING_POWER) / 2;
+  };
+
+  // Calculate distance for dynamic animation duration
+  const calculateAnimationDuration = (startPos, targetPos) => {
+    const distance = Math.sqrt(
+      Math.pow(targetPos.x - startPos.x, 2) + Math.pow(targetPos.y - startPos.y, 2)
+    );
+    // Base duration + distance factor (min 300ms, max 1200ms)
+    return Math.max(300, Math.min(1200, distance * 0.8));
+  };
+
+  // Animation loop for smooth movement
+  useEffect(() => {
+    if (!isMoving || !targetPosition || !startPositionRef.current) return;
+
+    const animate = (currentTime) => {
+      const elapsed = currentTime - animationStartTimeRef.current;
+      const duration = calculateAnimationDuration(startPositionRef.current, targetPosition);
+      const progress = Math.min(elapsed / duration, 1);
+
+      if (progress >= 1) {
+        // Animation complete
+        sendMove(targetPosition.x, targetPosition.y, true);
+        setIsMoving(false);
+        setTargetPosition(null);
+        startPositionRef.current = null;
+        return;
+      }
+
+      // Calculate eased position
+      const easedProgress = easeInOutQuad(progress);
+      const currentX = startPositionRef.current.x + 
+        (targetPosition.x - startPositionRef.current.x) * easedProgress;
+      const currentY = startPositionRef.current.y + 
+        (targetPosition.y - startPositionRef.current.y) * easedProgress;
+
+      // Send position update
+      sendMove(currentX, currentY, true);
+
+      // Continue animation
+      requestAnimationFrame(animate);
+    };
+
+    requestAnimationFrame(animate);
+  }, [isMoving, targetPosition, sendMove]);
 
   // WebSocket connection management with heartbeat and auto-reconnection
   const connect = useCallback((name) => {
@@ -365,7 +450,44 @@ export default function App() {
       const participants = participantsRef.current;
       const selfId = selfIdRef.current;
       const nearby = nearbyRef.current;
+      const targetPos = targetPositionRef.current;
+      const moving = isMovingRef.current;
       const selfParticipant = selfId ? participants.get(selfId) : null;
+
+      // Draw target indicator if moving
+      if (moving && targetPos && selfParticipant) {
+        // Animated target circle
+        const time = performance.now() * 0.003;
+        const pulseSize = 8 + Math.sin(time) * 3;
+        
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.arc(targetPos.x, targetPos.y, pulseSize, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Target crosshair
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.6)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(targetPos.x - 10, targetPos.y);
+        ctx.lineTo(targetPos.x + 10, targetPos.y);
+        ctx.moveTo(targetPos.x, targetPos.y - 10);
+        ctx.lineTo(targetPos.x, targetPos.y + 10);
+        ctx.stroke();
+
+        // Movement trail line
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.moveTo(selfParticipant.x, selfParticipant.y);
+        ctx.lineTo(targetPos.x, targetPos.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
 
       // Draw proximity radius for self
       if (selfParticipant) {
@@ -400,48 +522,59 @@ export default function App() {
         }
       }
 
-      // Draw all participants
+      // Draw all participants with enhanced animation
       for (const [id, participant] of participants) {
         const isSelf = id === selfId;
+        const isCurrentlyMoving = isSelf && moving;
 
-        // Glow effect
+        // Enhanced glow effect for moving avatar
         ctx.beginPath();
-        ctx.fillStyle = isSelf
-          ? "rgba(255, 255, 255, 0.1)"
-          : "rgba(34, 193, 255, 0.1)";
-        ctx.arc(participant.x, participant.y, 25, 0, Math.PI * 2);
+        if (isCurrentlyMoving) {
+          const glowIntensity = 0.15 + Math.sin(performance.now() * 0.005) * 0.05;
+          ctx.fillStyle = `rgba(255, 255, 255, ${glowIntensity})`;
+          ctx.arc(participant.x, participant.y, 30, 0, Math.PI * 2);
+        } else {
+          ctx.fillStyle = isSelf
+            ? "rgba(255, 255, 255, 0.1)"
+            : "rgba(34, 193, 255, 0.1)";
+          ctx.arc(participant.x, participant.y, 25, 0, Math.PI * 2);
+        }
         ctx.fill();
 
         // Main avatar circle
         ctx.beginPath();
         ctx.fillStyle = participant.color || "#22c1ff";
-        ctx.arc(participant.x, participant.y, isSelf ? 15 : 12, 0, Math.PI * 2);
+        const avatarSize = isSelf ? (isCurrentlyMoving ? 16 : 15) : 12;
+        ctx.arc(participant.x, participant.y, avatarSize, 0, Math.PI * 2);
         ctx.fill();
 
-        // Border for self
+        // Enhanced border for self
         if (isSelf) {
           ctx.beginPath();
-          ctx.strokeStyle = "#ffffff";
-          ctx.lineWidth = 3;
-          ctx.arc(participant.x, participant.y, 18, 0, Math.PI * 2);
+          ctx.strokeStyle = isCurrentlyMoving ? "#ffffff" : "#ffffff";
+          ctx.lineWidth = isCurrentlyMoving ? 4 : 3;
+          const borderSize = isCurrentlyMoving ? 20 : 18;
+          ctx.arc(participant.x, participant.y, borderSize, 0, Math.PI * 2);
           ctx.stroke();
         }
 
-        // Name label
-        ctx.font =
-          "14px ui-monospace, SFMono-Regular, Menlo, Monaco, monospace";
+        // Name label with movement indicator
+        ctx.font = "14px ui-monospace, SFMono-Regular, Menlo, Monaco, monospace";
         ctx.fillStyle = isSelf ? "#ffffff" : "#22c1ff";
         ctx.textAlign = "left";
 
         const nameX = participant.x + 25;
         const nameY = participant.y + 5;
+        const displayName = isCurrentlyMoving 
+          ? `${participant.name || "Guest"} →`
+          : participant.name || "Guest";
 
         // Text shadow for better readability
         ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
-        ctx.fillText(participant.name || "Guest", nameX + 1, nameY + 1);
+        ctx.fillText(displayName, nameX + 1, nameY + 1);
 
         ctx.fillStyle = isSelf ? "#ffffff" : "#22c1ff";
-        ctx.fillText(participant.name || "Guest", nameX, nameY);
+        ctx.fillText(displayName, nameX, nameY);
       }
 
       rafRef.current = requestAnimationFrame(draw);
@@ -455,7 +588,7 @@ export default function App() {
         cancelAnimationFrame(rafRef.current);
       }
     };
-  }, [gameState]); // Only depend on gameState
+  }, [gameState]);
 
   // Join nexus handler
   const handleJoinNexus = () => {
@@ -499,7 +632,22 @@ export default function App() {
   // Test move button for debugging
   const handleTestMove = () => {
     console.log(`Test move button clicked`);
-    sendMove(Math.random() * 1600, Math.random() * 900);
+    const targetX = Math.random() * 1600;
+    const targetY = Math.random() * 900;
+    
+    // Simulate click behavior
+    if (!selfId) return;
+    
+    const currentParticipant = participantsMap.get(selfId);
+    if (!currentParticipant) return;
+
+    const startPos = { x: currentParticipant.x, y: currentParticipant.y };
+    const targetPos = { x: Math.round(targetX), y: Math.round(targetY) };
+
+    setTargetPosition(targetPos);
+    setIsMoving(true);
+    startPositionRef.current = startPos;
+    animationStartTimeRef.current = performance.now();
   };
 
   // Cleanup on unmount
@@ -665,8 +813,8 @@ export default function App() {
           <div className="border-2 border-cyan-500/30 rounded-lg overflow-hidden shadow-2xl">
             <canvas
               ref={canvasRef}
-              onMouseMove={handleCanvasMouseMove}
-              className="cursor-crosshair"
+              onClick={handleCanvasClick}
+              className="cursor-pointer transition-all duration-200 hover:border-cyan-400/50"
             />
           </div>
 
@@ -677,6 +825,11 @@ export default function App() {
             {selfId && (
               <div className="text-slate-400 mt-1">
                 ID: {selfId.slice(0, 8)}...
+              </div>
+            )}
+            {isMoving && (
+              <div className="text-yellow-400 mt-1 animate-pulse">
+                ⟶ MOVING
               </div>
             )}
           </div>
@@ -690,19 +843,17 @@ export default function App() {
             NEURAL INTERFACE INSTRUCTIONS
           </div>
           <div className="text-slate-400 space-y-1">
-            <div>• Move your mouse cursor over the neural map to navigate</div>
+            <div>• <span className="text-cyan-300">Click anywhere</span> on the neural map to move your avatar</div>
+            <div>• Your avatar will <span className="text-cyan-300">smoothly animate</span> to the target location</div>
             <div>
-              • Your avatar appears with a white border and proximity radius
+              • White crosshair shows your movement target with animated pulse
             </div>
             <div>
               • Blue lines connect you to nearby participants within{" "}
               {PROXIMITY_RADIUS}px
             </div>
             <div>
-              • Use "TEST MOVE" button to verify WebSocket communication
-            </div>
-            <div>
-              • Check browser console for detailed debugging information
+              • Use "TEST MOVE" button to trigger random movement animation
             </div>
           </div>
         </div>
