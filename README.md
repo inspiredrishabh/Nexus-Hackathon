@@ -2,7 +2,7 @@
 
 A real-time virtual collaboration space set in the year 2070, where users can navigate a futuristic neural network interface, interact with others in proximity, and communicate through various channels.
 
-![Nexus Virtual World](https://placeholder-for-screenshot.png)
+![Nexus Virtual World](https://res.cloudinary.com/dlzkqms1c/image/upload/v1756550405/Screenshot_2025-08-30_at_4.07.57_PM_e1ddq3.png)
 
 ## Overview
 
@@ -61,8 +61,8 @@ The platform uses proximity-based networking, meaning you can only communicate w
 1. Clone the repository
 
 ```bash
-git clone https://github.com/inspiredrishabh/nexus-virtual-world.git
-cd nexus-virtual-world
+git clone https://github.com/inspiredrishabh/VibeCoding.git
+cd VibeCoding
 ```
 
 2. Install dependencies for both frontend and backend
