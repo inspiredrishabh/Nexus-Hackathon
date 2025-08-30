@@ -490,15 +490,50 @@ export default function App() {
     const roomData = { width: 1600, height: 900 };
     canvas.width = roomData.width;
     canvas.height = roomData.height;
-    canvas.style.width = `800px`; // Fixed display size
-    canvas.style.height = `450px`; // Fixed display size
+    canvas.style.width = `100%`; // Make it responsive
+    canvas.style.height = `auto`; // Maintain aspect ratio
+    canvas.style.maxWidth = `800px`; // Limit maximum size
+    canvas.style.backgroundColor = "#020617"; // Ensure dark background
 
     function draw() {
       if (!mounted) return;
 
-      // Clear canvas with dark background
+      // Clear canvas with dark space background
       ctx.fillStyle = "#020617";
       ctx.fillRect(0, 0, roomData.width, roomData.height);
+
+      // Add subtle gradient overlay for depth
+      const gradient = ctx.createRadialGradient(
+        roomData.width / 2, roomData.height / 2, 0,
+        roomData.width / 2, roomData.height / 2, roomData.width / 2
+      );
+      gradient.addColorStop(0, "rgba(2, 6, 23, 0)");
+      gradient.addColorStop(1, "rgba(0, 0, 0, 0.3)");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, roomData.width, roomData.height);
+
+      // Add subtle grid pattern
+      ctx.strokeStyle = "rgba(34, 193, 255, 0.05)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([1, 4]);
+      
+      // Vertical lines
+      for (let x = 0; x <= roomData.width; x += 50) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, roomData.height);
+        ctx.stroke();
+      }
+      
+      // Horizontal lines
+      for (let y = 0; y <= roomData.height; y += 50) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(roomData.width, y);
+        ctx.stroke();
+      }
+      
+      ctx.setLineDash([]);
 
       const participants = participantsRef.current;
       const selfId = selfIdRef.current;
@@ -893,50 +928,36 @@ export default function App() {
         </div>
       </div>
 
-      {/* Canvas Container */}
-      <div className="flex items-center justify-center p-6">
-        <div className="relative">
-          <div className="border-2 border-cyan-500/30 rounded-lg overflow-hidden shadow-2xl">
-            <canvas
-              ref={canvasRef}
-              onClick={handleCanvasClick}
-              className="cursor-pointer transition-all duration-200 hover:border-cyan-400/50"
-            />
-          </div>
-
-          {/* Overlay Info */}
-          <div className="absolute top-4 left-4 bg-slate-800/80 backdrop-blur-sm border border-cyan-500/30 rounded-lg p-3 text-xs">
-            <div className="text-cyan-300 font-bold mb-1">NEURAL MAP</div>
-            <div className="text-slate-300">1600 × 900</div>
-            {selfId && (
-              <div className="text-slate-400 mt-1">
-                ID: {selfId.slice(0, 8)}...
-              </div>
-            )}
-            {isMoving && (
-              <div className="text-yellow-400 mt-1 animate-pulse">
-                ⟶ MOVING
-              </div>
-            )}
-          </div>
-
-          {/* Chat Panel */}
+      {/* Main Content Area */}
+      <div className="flex p-6 gap-6 max-w-7xl mx-auto">
+        {/* Left Sidebar - Chat Panel */}
+        <div className="w-80 flex-shrink-0">
           {showChat && nearby.length > 0 && (
-            <div className="absolute bottom-4 left-4 bg-slate-800/95 backdrop-blur-sm border border-cyan-500/30 rounded-lg w-80 shadow-2xl">
-              {/* Chat Header */}
-              <div className="p-3 border-b border-cyan-500/20">
+            <div className="bg-slate-800/95 backdrop-blur-sm border border-cyan-500/30 rounded-lg shadow-2xl">
+              {/* Chat Header with Close Button */}
+              <div className="p-3 border-b border-cyan-500/20 bg-gradient-to-r from-slate-800/80 to-slate-700/80">
                 <div className="flex items-center justify-between">
-                  <div className="text-cyan-300 font-bold text-sm">
-                    PROXIMITY CHAT
+                  <div className="text-cyan-300 font-bold text-sm flex items-center space-x-2">
+                    <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                    <span>PROXIMITY CHAT</span>
                   </div>
-                  <div className="text-xs text-slate-400">
-                    {nearby.length} nearby
+                  <div className="flex items-center space-x-2">
+                    <div className="text-xs text-slate-400 bg-slate-600/50 px-2 py-1 rounded">
+                      {nearby.length} nearby
+                    </div>
+                    <button
+                      onClick={() => setShowChat(false)}
+                      className="text-slate-400 hover:text-red-400 transition-colors text-lg leading-none"
+                      title="Close chat"
+                    >
+                      ×
+                    </button>
                   </div>
                 </div>
               </div>
 
               {/* Chat Messages */}
-              <div className="h-48 overflow-y-auto p-3 space-y-2 scrollbar-thin scrollbar-thumb-cyan-500/30">
+              <div className="h-64 overflow-y-auto p-3 space-y-2 scrollbar-thin scrollbar-thumb-cyan-500/30 bg-slate-900/30">
                 {chatMessages.slice(-20).map((msg) => (
                   <div
                     key={msg.id}
@@ -946,13 +967,13 @@ export default function App() {
                         : 'text-left'
                     }`}
                   >
-                    <div className={`inline-block max-w-[90%] p-2 rounded ${
+                    <div className={`inline-block max-w-[90%] p-2 rounded-lg border ${
                       msg.isOwn
-                        ? 'bg-cyan-600/20 text-cyan-100'
-                        : 'bg-slate-700/50 text-slate-200'
+                        ? 'bg-gradient-to-r from-cyan-600/20 to-cyan-500/10 text-cyan-100 border-cyan-500/20'
+                        : 'bg-gradient-to-r from-slate-700/40 to-slate-600/20 text-slate-200 border-slate-500/20'
                     }`}>
                       {!msg.isOwn && (
-                        <div className="text-cyan-300 font-bold mb-1">
+                        <div className="text-cyan-300 font-bold mb-1 text-xs">
                           {msg.senderName}
                         </div>
                       )}
@@ -967,14 +988,17 @@ export default function App() {
                   </div>
                 ))}
                 {chatMessages.length === 0 && (
-                  <div className="text-center text-slate-400 text-xs py-4">
-                    Move closer to other participants to start chatting
+                  <div className="text-center text-slate-400 text-xs py-8 flex flex-col items-center space-y-2">
+                    <div className="w-8 h-8 border-2 border-cyan-500/30 rounded-full flex items-center justify-center">
+                      💬
+                    </div>
+                    <div>Move closer to other participants to start chatting</div>
                   </div>
                 )}
               </div>
 
               {/* Chat Input */}
-              <div className="p-3 border-t border-cyan-500/20">
+              <div className="p-3 border-t border-cyan-500/20 bg-slate-800/60">
                 <div className="flex space-x-2">
                   <input
                     ref={chatInputRef}
@@ -983,24 +1007,222 @@ export default function App() {
                     onChange={(e) => setChatInput(e.target.value)}
                     onKeyPress={handleChatKeyPress}
                     placeholder="Type your message..."
-                    className="flex-1 bg-slate-700/50 border border-cyan-500/30 rounded px-3 py-2 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-cyan-400"
+                    className="flex-1 bg-slate-700/50 border border-cyan-500/30 rounded px-3 py-2 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/20"
                     maxLength={200}
                     disabled={nearby.length === 0}
                   />
                   <button
                     onClick={sendChatMessage}
                     disabled={!chatInput.trim() || nearby.length === 0}
-                    className="bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-3 py-2 rounded text-sm transition-colors duration-200"
+                    className="bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 disabled:from-slate-600 disabled:to-slate-700 disabled:cursor-not-allowed text-white px-3 py-2 rounded text-sm transition-all duration-200 font-bold shadow-lg hover:shadow-cyan-500/25"
                   >
-                    Send
+                    SEND
                   </button>
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  Messages visible to participants within {PROXIMITY_RADIUS}px
+                <div className="text-xs text-slate-500 mt-1 flex items-center space-x-1">
+                  <div className="w-1 h-1 bg-cyan-500 rounded-full"></div>
+                  <span>Messages visible within {PROXIMITY_RADIUS}px radius</span>
                 </div>
               </div>
             </div>
           )}
+
+          {/* Chat Toggle Button when chat is hidden */}
+          {(!showChat || nearby.length === 0) && (
+            <div className="bg-slate-800/90 backdrop-blur-sm border border-cyan-500/30 rounded-lg p-4 text-center">
+              <div className="text-cyan-300 font-bold text-sm mb-2">PROXIMITY CHAT</div>
+              {nearby.length === 0 ? (
+                <div className="text-slate-400 text-xs">
+                  No participants nearby
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowChat(true)}
+                  className="bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded text-sm transition-colors"
+                >
+                  Open Chat ({nearby.length} nearby)
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Center - Canvas Container */}
+        <div className="flex-1 flex items-center justify-center">
+          <div className="relative">
+            <div className="border-2 border-cyan-500/30 rounded-lg overflow-hidden shadow-2xl bg-slate-900">
+              <canvas
+                ref={canvasRef}
+                onClick={handleCanvasClick}
+                className="cursor-pointer transition-all duration-200 hover:border-cyan-400/50 bg-slate-900 block"
+                style={{ 
+                  backgroundColor: '#020617',
+                  width: '100%',
+                  height: 'auto',
+                  maxWidth: '800px'
+                }}
+              />
+            </div>
+
+            {/* Overlay Info */}
+            <div className="absolute top-4 left-4 bg-slate-800/80 backdrop-blur-sm border border-cyan-500/30 rounded-lg p-3 text-xs">
+              <div className="text-cyan-300 font-bold mb-1">NEURAL MAP</div>
+              <div className="text-slate-300">1600 × 900</div>
+              {selfId && (
+                <div className="text-slate-400 mt-1">
+                  ID: {selfId.slice(0, 8)}...
+                </div>
+              )}
+              {isMoving && (
+                <div className="text-yellow-400 mt-1 animate-pulse">
+                  ⟶ MOVING
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Right Sidebar - Minimap */}
+        <div className="w-64 flex-shrink-0">
+          <div className="bg-slate-900/90 backdrop-blur-sm border border-cyan-500/30 rounded-lg shadow-2xl">
+            {/* Minimap Header with Close Button */}
+            <div className="p-3 border-b border-cyan-500/20 bg-gradient-to-r from-slate-800/80 to-slate-700/80">
+              <div className="flex items-center justify-between">
+                <div className="text-cyan-300 font-bold text-sm">NEURAL MAP</div>
+                <div className="flex items-center space-x-2">
+                  <span className="text-slate-400 text-xs">1600×900</span>
+                  <button
+                    onClick={() => {/* Add minimap toggle state if needed */}
+                    }
+                    className="text-slate-400 hover:text-red-400 transition-colors text-lg leading-none"
+                    title="Minimize map"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Minimap Content */}
+            <div className="p-3">
+              <div className="relative w-full h-32 bg-slate-800/50 rounded border border-slate-600/30 overflow-hidden">
+                {/* Minimap Background Grid */}
+                <svg className="absolute inset-0 w-full h-full opacity-20" viewBox="0 0 160 90">
+                  <defs>
+                    <pattern id="minimapGrid" width="10" height="10" patternUnits="userSpaceOnUse">
+                      <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#22c1ff" strokeWidth="0.5"/>
+                    </pattern>
+                  </defs>
+                  <rect width="160" height="90" fill="url(#minimapGrid)" />
+                </svg>
+                
+                {/* Minimap Participants */}
+                {Array.from(participantsMap.entries()).map(([id, participant]) => {
+                  const isSelf = id === selfId;
+                  const isNearby = nearby.includes(id);
+                  const x = (participant.x / 1600) * 100; // Convert to percentage
+                  const y = (participant.y / 900) * 100;
+                  
+                  return (
+                    <div
+                      key={id}
+                      className={`absolute w-2 h-2 rounded-full transition-all duration-200 ${
+                        isSelf 
+                          ? 'bg-white border border-cyan-400 shadow-lg' 
+                          : isNearby 
+                            ? 'bg-cyan-400 shadow-cyan-400/50 shadow-sm' 
+                            : 'bg-slate-500'
+                      } ${isMoving && isSelf ? 'animate-pulse' : ''}`}
+                      style={{
+                        left: `${x}%`,
+                        top: `${y}%`,
+                        transform: 'translate(-50%, -50%)'
+                      }}
+                      title={participant.name}
+                    />
+                  );
+                })}
+                
+                {/* Self Proximity Radius */}
+                {selfId && participantsMap.has(selfId) && (
+                  <div
+                    className="absolute border border-cyan-400/30 rounded-full pointer-events-none"
+                    style={{
+                      left: `${(participantsMap.get(selfId).x / 1600) * 100}%`,
+                      top: `${(participantsMap.get(selfId).y / 900) * 100}%`,
+                      width: `${(PROXIMITY_RADIUS * 2 / 1600) * 100}%`,
+                      height: `${(PROXIMITY_RADIUS * 2 / 900) * 100}%`,
+                      transform: 'translate(-50%, -50%)'
+                    }}
+                  />
+                )}
+                
+                {/* Movement Target Indicator */}
+                {isMoving && targetPosition && (
+                  <div
+                    className="absolute w-1.5 h-1.5 bg-yellow-400 rounded-full animate-ping"
+                    style={{
+                      left: `${(targetPosition.x / 1600) * 100}%`,
+                      top: `${(targetPosition.y / 900) * 100}%`,
+                      transform: 'translate(-50%, -50%)'
+                    }}
+                  />
+                )}
+              </div>
+              
+              {/* Minimap Legend */}
+              <div className="flex items-center justify-between mt-3 text-xs">
+                <div className="flex items-center space-x-2">
+                  <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
+                  <span className="text-slate-400">You</span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <div className="w-1.5 h-1.5 bg-cyan-400 rounded-full"></div>
+                  <span className="text-slate-400">Nearby</span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <div className="w-1.5 h-1.5 bg-slate-500 rounded-full"></div>
+                  <span className="text-slate-400">Others</span>
+                </div>
+              </div>
+              
+              {/* Current Coordinates */}
+              {selfId && participantsMap.has(selfId) && (
+                <div className="text-xs text-slate-500 mt-2 text-center bg-slate-800/50 rounded p-2">
+                  <div className="text-cyan-400 font-bold mb-1">POSITION</div>
+                  <div>X: {Math.round(participantsMap.get(selfId).x)}</div>
+                  <div>Y: {Math.round(participantsMap.get(selfId).y)}</div>
+                </div>
+              )}
+
+              {/* Participants List */}
+              <div className="mt-3 text-xs">
+                <div className="text-cyan-400 font-bold mb-2">PARTICIPANTS ({participantsMap.size})</div>
+                <div className="space-y-1 max-h-24 overflow-y-auto scrollbar-thin scrollbar-thumb-cyan-500/30">
+                  {Array.from(participantsMap.entries()).map(([id, participant]) => {
+                    const isSelf = id === selfId;
+                    const isNearby = nearby.includes(id);
+                    return (
+                      <div
+                        key={id}
+                        className={`flex items-center justify-between p-1 rounded ${
+                          isSelf ? 'bg-cyan-600/20' : isNearby ? 'bg-cyan-500/10' : 'bg-slate-700/30'
+                        }`}
+                      >
+                        <span className={`truncate ${isSelf ? 'text-white' : isNearby ? 'text-cyan-300' : 'text-slate-400'}`}>
+                          {participant.name}{isSelf ? ' (You)' : ''}
+                        </span>
+                        <div
+                          className="w-2 h-2 rounded-full"
+                          style={{ backgroundColor: participant.color }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
