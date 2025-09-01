@@ -67,8 +67,8 @@ The platform uses proximity-based networking, meaning you can only communicate w
 1. Clone the repository
 
 ```bash
-git clone https://github.com/inspiredrishabh/VibeCoding.git
-cd VibeCoding
+git clone https://github.com/inspiredrishabh/Nexus-Hackathon.git
+cd Nexus-Hackathon
 ```
 
 2. Install dependencies for both frontend and backend
